@@ -199,6 +199,60 @@ class TestOutputEncoding(unittest.TestCase):
         self.assertIn("中文测试", captured.getvalue())
 
 
+class TestHelpOutputEncoding(unittest.TestCase):
+    """回归测试：帮助文本里有中文，在非 UTF-8 输出流上必须不崩。
+
+    CI 的 Windows 任务就是在这里挂的——argparse 打印中文帮助时抛
+    ``UnicodeEncodeError``，因为 ``build_parser()`` 自己不会重配输出编码。
+    真实的命令行走 ``main()`` 没问题（那里配了），但任何直接使用
+    ``build_parser()`` 的调用方（测试、嵌进别的程序）都会踩到。
+    """
+
+    @staticmethod
+    def _ascii_only_stream():
+        """一个只能输出 ASCII 的流，模拟 Windows 上重定向后的 cp1252。
+
+        必须用 ``TextIOWrapper`` 而不是 ``codecs.getwriter``：只有前者有
+        ``reconfigure()``，而 ``_configure_output_encoding()`` 正是靠它来修编码的。
+        用 StreamWriter 会让这个测试变成"验证一个不可能被修复的场景"。
+        """
+        return io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="strict")
+
+    def test_help_does_not_crash_on_ascii_only_stdout(self):
+        original = sys.stdout
+        sys.stdout = self._ascii_only_stream()
+        try:
+            with self.assertRaises(SystemExit):
+                build_parser().parse_args(["--help"])
+            # build_parser() 应当已把编码重配为 UTF-8，写入才会成功
+            self.assertEqual(sys.stdout.encoding.lower().replace("-", ""), "utf8")
+        finally:
+            sys.stdout = original
+
+    def test_invalid_argument_usage_does_not_crash(self):
+        original_out, original_err = sys.stdout, sys.stderr
+        sys.stdout = self._ascii_only_stream()
+        sys.stderr = self._ascii_only_stream()
+        try:
+            with self.assertRaises(SystemExit):
+                build_parser().parse_args(["--definitely-not-a-flag"])
+        finally:
+            sys.stdout, sys.stderr = original_out, original_err
+
+    def test_help_text_really_contains_chinese(self):
+        """确认帮助里确实有中文——否则这个回归测试就没有保护意义。"""
+        import contextlib
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            with self.assertRaises(SystemExit):
+                build_parser().parse_args(["--help"])
+        self.assertTrue(
+            any("\u4e00" <= ch <= "\u9fff" for ch in buffer.getvalue()),
+            "帮助文本应包含中文，否则本回归测试失去意义",
+        )
+
+
 class TestPlatformGuard(unittest.TestCase):
     @unittest.skipIf(sys.platform == "win32", "本用例验证非 Windows 的行为")
     def test_returns_2_on_non_windows(self):

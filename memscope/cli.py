@@ -29,7 +29,12 @@ def _configure_output_encoding() -> None:
     """把标准输出/错误切到 UTF-8。
 
     Windows 上 stdout 被重定向时的默认编码是 GBK / cp1252，
-    而本工具的输出全是中文——不重配会直接抛 UnicodeEncodeError。
+    而本工具的输出（包括 argparse 的帮助与用法文本）全是中文——
+    不重配会直接抛 UnicodeEncodeError。
+
+    这个函数在 ``main()`` 与 ``build_parser()`` 里各调用一次。
+    后者是为了让**任何**直接使用 ``build_parser()`` 的调用方
+    （测试、把本工具嵌进别的程序）在打印 ``--help`` 时也不会崩。
     """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -59,6 +64,10 @@ def _error(message: str) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    # 先配好输出编码：帮助与用法文本里有中文，在非 UTF-8 输出流上
+    # argparse 打印它们会抛 UnicodeEncodeError（CI 的 Windows 任务踩过）。
+    _configure_output_encoding()
+
     parser = argparse.ArgumentParser(
         prog="memscope",
         description="诚实的内存诊断器 —— 观测、归因、找增长，不「释放内存」",
