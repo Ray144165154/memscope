@@ -113,6 +113,20 @@
   （`Out-File -Encoding utf8NoBOM` 只有 PS 7 支持，`-Encoding utf8`
   在 PS 5.1 下会写出 BOM；PS 5.1 默认按 OEM 代码页解码原生命令输出）。
   放进 Python 后编码、引号、路径、退出码全在一个可控环境里。
+- **CI 的退出码检查依赖 shell 语义**：`python ... 2>&1 | Out-Null` 之后
+  `$LASTEXITCODE` 在 CI 的 PowerShell 7 上不等于 2（本机 PS 5.1 上是 2）。
+  根因未查明——GitHub 的 job 日志需要认证才能下载（403），而本机无法
+  复现 PS 7。但依赖 shell 的退出码语义本身就是错的做法：PS 5.1 与 7 对
+  "原生命令写 stderr"的处理不同，管道末尾接 cmdlet 后 `$LASTEXITCODE`
+  的行为也不一致，bash 又是另一套规则。
+  改用 `tools/ci_smoke.py --cli`，以 subprocess 取真实 `returncode`——
+  操作系统层面的值，不经过任何 shell 解释，而且测的是**真正的入口点**
+  （`python -m memscope`），不是进程内调用。
+
+  > 定位手段值得一提：因为拿不到日志，把「编码韧性」检查**拆成 6 个
+  > 细粒度步骤**，让失败的步骤名直接指出是哪一条命令挂了。
+  > CI 随即报出"失败步骤: 编码韧性 6/6 · 非法参数退出码"，1~5 全过。
+
 - **缺少厂商信息时分类错误**，以及若干 lint 与编码问题。
 
 ### 说明
