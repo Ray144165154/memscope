@@ -35,45 +35,137 @@ jobs:
       - name: 运行测试（只用标准库 unittest，无需安装任何包）
         run: python run_tests.py
 
-      # 采集功能只能在 Windows 上跑，所以冒烟测试也只在 Windows 上做
-      - name: 冒烟测试 CLI（Windows）
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          python -m memscope --version
-          python -m memscope --limit 5 > snapshot.txt
-          echo "--- 快照输出前 15 行 ---"
-          head -15 snapshot.txt
-          python -m memscope --json > snapshot.json
-          python -c "
-          import json
-          with open('snapshot.json', encoding='utf-8') as fh:
-              data = json.load(fh)
-          assert data['applications'], '至少要归因出一个应用'
-          assert data['system']['physical_total'] > 0
-          total = sum(a['private_bytes'] for a in data['applications'])
-          assert total > 0
-          print('JSON 结构校验通过：', len(data['applications']), '个应用')
-          "
-          python -m memscope --html report.html -q
-          test -s report.html && echo "HTML 报告已生成"
-
-      - name: 冒烟测试采样与分析（Windows）
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          python -m memscope watch -i 1 -d 4 -o smoke.jsonl --fast
-          python -m memscope analyze smoke.jsonl
-
-      # 归因与分析是纯逻辑，非 Windows 平台也要验证可导入、可运行
       - name: 跨平台确认核心逻辑可导入
         if: runner.os != 'Windows'
         run: |
-          python -c "
-          import memscope
-          from memscope import attribute, analyze_samples, diagnose, render_text
-          print('核心逻辑在', __import__('sys').platform, '上可导入')
-          "
+          python -c "import memscope, sys; \
+          from memscope import attribute, analyze_samples, diagnose, render_text; \
+          print('核心逻辑在', sys.platform, '上可导入')"
+
+      # ==================================================================
+      # 以下步骤只在 Windows 上跑（采集依赖 Windows API）。
+      #
+      # 几条踩过坑的经验，写在这里免得以后又踩：
+      #
+      # 1. 用 pwsh 而不是 bash。Git Bash（MSYS2）在路径转换、重定向与管道上
+      #    有额外一层行为；原生 PowerShell 的行为可以在开发机上直接复现。
+      #
+      # 2. PowerShell 里**不做**结构校验，只跑命令 + 查退出码。
+      #    校验交给 tools/ci_smoke.py —— shell 的编码/引号/BOM 行为在
+      #    PS 5.1、PS 7、bash 之间都不一致，放进 Python 才可控。
+      #
+      # 3. 写文件用 [System.IO.File]::WriteAllLines + UTF8Encoding($false)。
+      #    `Out-File -Encoding utf8NoBOM` 只有 PowerShell 7 支持，
+      #    而 `-Encoding utf8` 在 PS 5.1 下会写出 BOM。
+      #
+      # 4. **不要设 $ErrorActionPreference='Stop'**。这些步骤以原生命令为主，
+      #    而 PowerShell 会把原生命令写 stderr 当成终止错误——可 stderr
+      #    在很多情况下是**正常输出**：memscope watch 的采样进度、unittest
+      #    的测试结果都走 stderr。设了 Stop 会把这些当成失败。
+      #    正确做法是每个原生命令后显式检查 $LASTEXITCODE。
+      # ==================================================================
+      - name: 冒烟测试 CLI（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+          $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+
+          Write-Host '::group::1) --version'
+          python -m memscope --version
+          if ($LASTEXITCODE) { throw "--version 失败 (exit=$LASTEXITCODE)" }
+          Write-Host '::endgroup::'
+
+          Write-Host '::group::2) 快照文本输出'
+          $snapshotText = python -m memscope --limit 5
+          if ($LASTEXITCODE) { throw "快照失败 (exit=$LASTEXITCODE)" }
+          [System.IO.File]::WriteAllLines("$PWD\snapshot.txt", $snapshotText, $utf8NoBom)
+          $snapshotText | Select-Object -First 12
+          Write-Host '::endgroup::'
+
+          Write-Host '::group::3) JSON 输出'
+          $jsonLines = python -m memscope --json
+          if ($LASTEXITCODE) { throw "--json 失败 (exit=$LASTEXITCODE)" }
+          [System.IO.File]::WriteAllLines("$PWD\snapshot.json", $jsonLines, $utf8NoBom)
+          Write-Host '::endgroup::'
+
+          Write-Host '::group::4) HTML 报告'
+          python -m memscope --html report.html -q
+          if ($LASTEXITCODE) { throw "--html 失败 (exit=$LASTEXITCODE)" }
+          Write-Host '::endgroup::'
+
+          Write-Host '::group::5) 结构校验（交给 Python，规避 shell 编码差异）'
+          python tools/ci_smoke.py --snapshot snapshot.json --html report.html
+          if ($LASTEXITCODE) { throw "结构校验失败 (exit=$LASTEXITCODE)" }
+          Write-Host '::endgroup::'
+
+          Write-Host '::group::6) --explain 归因审计'
+          $pid0 = (Get-Content snapshot.json -Raw -Encoding UTF8 | ConvertFrom-Json).applications[0].pids[0]
+          python -m memscope --limit 3 --explain $pid0 | Out-Null
+          if ($LASTEXITCODE) { throw "--explain 失败 (exit=$LASTEXITCODE)" }
+          Write-Host "已对 PID $pid0 完成归因审计"
+          Write-Host '::endgroup::'
+
+      - name: 冒烟测试采样与分析（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+          $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+
+          # watch 的采样进度写在 stderr 上——这是正常输出，不是错误
+          python -m memscope watch -i 1 -d 4 -o smoke.jsonl --fast
+          if ($LASTEXITCODE) { throw "watch 失败 (exit=$LASTEXITCODE)" }
+          if (-not (Test-Path smoke.jsonl)) { throw 'watch 没有生成采样文件' }
+
+          python -m memscope analyze smoke.jsonl
+          if ($LASTEXITCODE) { throw "analyze 失败 (exit=$LASTEXITCODE)" }
+
+          $trendLines = python -m memscope analyze smoke.jsonl --json
+          if ($LASTEXITCODE) { throw "analyze --json 失败 (exit=$LASTEXITCODE)" }
+          [System.IO.File]::WriteAllLines("$PWD\trend.json", $trendLines, $utf8NoBom)
+
+          python tools/ci_smoke.py --trend trend.json
+          if ($LASTEXITCODE) { throw "趋势结构校验失败 (exit=$LASTEXITCODE)" }
+
+      # ==================================================================
+      # 编码韧性回归保护。
+      #
+      # Windows 上标准输出被重定向时的默认编码是 GBK / cp1252，而本工具的输出
+      # （包括 argparse 打印的中文帮助）全是中文。这里**故意**把
+      # PYTHONIOENCODING 设成 cp1252，确认程序自己会把输出编码重配成 UTF-8。
+      #
+      # 这条是回归保护 —— CI 曾经因为 build_parser() 不重配编码而挂了 4 个任务。
+      # ==================================================================
+      - name: 编码韧性（Windows，强制 cp1252）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: cp1252
+        run: |
+          try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
+
+          python -m memscope --version
+          if ($LASTEXITCODE) { throw "--version 在 cp1252 下失败" }
+
+          python -m memscope --help | Out-Null
+          if ($LASTEXITCODE) { throw "--help 在 cp1252 下失败（argparse 打印中文帮助）" }
+
+          python -m memscope --limit 3 | Out-Null
+          if ($LASTEXITCODE) { throw "快照在 cp1252 下失败" }
+
+          python tools/check_zero_deps.py | Out-Null
+          if ($LASTEXITCODE) { throw "零依赖检查在 cp1252 下失败" }
+
+          # unittest 的结果写在 stderr 上，属于正常输出
+          python run_tests.py | Out-Null
+          if ($LASTEXITCODE) { throw "测试在 cp1252 下失败" }
+
+          # 非法参数应以退出码 2 结束，而不是崩溃
+          cmd /c "python -m memscope --definitely-not-a-flag >NUL 2>NUL"
+          if ($LASTEXITCODE -ne 2) { throw "非法参数应返回 2，实际 $LASTEXITCODE" }
+
+          Write-Host 'cp1252 环境下全部通过'
 
   lint:
     name: Lint (ruff)

@@ -86,6 +86,33 @@
   （同一软件被拆成几十条），泄漏检测随之失效。已改为默认完整采集。
 - **数据缺失时误报内存紧张**：`physical_total` 为 0 时
   `available_ratio` 算出 0，触发"物理可用偏低"警告。已加守卫。
+- **argparse 打印中文帮助时崩溃（CI 的 4 个 Windows 任务全挂）**：
+  `build_parser()` 自己不重配输出编码。Windows 上标准输出被重定向时的
+  默认编码是 GBK / cp1252，argparse 打印中文帮助与用法文本时抛
+  `UnicodeEncodeError`。真实的命令行走 `main()` 没问题（那里配了编码），
+  但任何直接使用 `build_parser()` 的调用方（测试、嵌进别的程序）都会踩到。
+  已让 `build_parser()` 与 `run_tests.py` 各自重配编码，并补了 3 个回归测试
+  （用 `TextIOWrapper(encoding="ascii")` 模拟受限输出流）。
+
+  > 第一版回归测试用 `codecs.getwriter("ascii")` 写过——`StreamWriter`
+  > 没有 `reconfigure`，等于在验证一个不可能被修复的场景。换成
+  > `TextIOWrapper` 才真正测到东西。
+
+- **CI 冒烟测试里 PowerShell 把正常输出当成错误**：Windows 步骤原先设了
+  `$ErrorActionPreference = 'Stop'`。这些步骤以原生命令为主，而 PowerShell
+  会把原生命令写 stderr 当成**终止错误**——可 stderr 在很多情况下是正常输出：
+  `memscope watch` 的采样进度、`unittest` 的测试结果都走 stderr。
+  已改为不设该偏好，每个原生命令后显式检查 `$LASTEXITCODE`。
+
+- **CI 的 Windows 步骤从 bash 改为 pwsh**：Git Bash（MSYS2）在路径转换、
+  重定向与管道上有额外一层行为，出问题难以定位，而在开发机上又无法复现
+  （本项目开发用的文件沙箱禁止创建命名管道，bash 根本跑不起来）。
+  原生 PowerShell 的行为可以直接在开发机上验证。
+- **CI 的结构校验从 shell 移到 Python**：新增 `tools/ci_smoke.py`。
+  shell 的编码、引号与 BOM 行为在 PS 5.1、PS 7、bash 之间都不一致
+  （`Out-File -Encoding utf8NoBOM` 只有 PS 7 支持，`-Encoding utf8`
+  在 PS 5.1 下会写出 BOM；PS 5.1 默认按 OEM 代码页解码原生命令输出）。
+  放进 Python 后编码、引号、路径、退出码全在一个可控环境里。
 - **缺少厂商信息时分类错误**，以及若干 lint 与编码问题。
 
 ### 说明
