@@ -18,12 +18,15 @@ PowerShell 那层只负责两件事：跑命令、看退出码。
 用法::
 
     python tools/ci_smoke.py --snapshot snapshot.json --html report.html --trend trend.json
+    python tools/ci_smoke.py --cli        # 验证退出码约定
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -171,23 +174,82 @@ def check_trend(path: Path) -> list[str]:
     return problems
 
 
+def check_cli_exit_codes() -> list[str]:
+    """验证 CLI 的退出码约定。
+
+    **为什么用 subprocess 而不是让 shell 检查 ``$LASTEXITCODE``？**
+
+    shell 的退出码语义不可靠也不可移植：
+
+      * PowerShell 5.1 与 7 对"原生命令写 stderr"的处理不同，而
+        ``--definitely-not-a-flag`` 恰恰会写 stderr
+      * 管道末尾接一个 cmdlet（如 ``Out-Null``）后，某些版本里
+        ``$LASTEXITCODE`` 的行为并不如预期
+      * bash 的 ``$?``、``set -e``、``pipefail`` 又是一套规则
+
+    用 subprocess 拿到的 ``returncode`` 是操作系统层面的真实值，
+    不经过任何 shell 解释。而且它测的是**真正的入口点**
+    （``python -m memscope``），而不是进程内调用。
+
+    顺带一个好处：这里继承了当前环境的 ``PYTHONIOENCODING``，
+    所以放在 cp1252 的 CI 步骤里跑，就同时验证了编码韧性。
+    """
+    cases: list[tuple[list[str], int, str]] = [
+        (["--version"], 0, "--version"),
+        (["--help"], 0, "--help（argparse 打印中文）"),
+        (["--limit", "1"], 0, "快照"),
+        (["--definitely-not-a-flag"], 2, "非法参数应由 argparse 以 2 结束"),
+    ]
+
+    problems: list[str] = []
+    for args, expected, label in cases:
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "memscope", *args],
+                capture_output=True,
+                timeout=180,
+                env=dict(os.environ),
+            )
+        except subprocess.TimeoutExpired:
+            problems.append(f"{label}: 超时（超过 180 秒）")
+            continue
+
+        if proc.returncode != expected:
+            stderr = proc.stderr.decode("utf-8", "replace").strip()[:200]
+            problems.append(
+                f"{label}: 期望退出码 {expected}，实际 {proc.returncode}"
+                + (f"；stderr: {stderr}" if stderr else "")
+            )
+        else:
+            print(f"  {label}: 退出码 {proc.returncode} ✔")
+
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     _configure_output_encoding()
 
     parser = argparse.ArgumentParser(
         prog="ci_smoke",
-        description="校验 memscope CLI 的产出（编码与引号全部可控）",
+        description="校验 memscope CLI 的产出与退出码（编码与引号全部可控）",
     )
     parser.add_argument("--snapshot", help="memscope --json 的输出文件")
     parser.add_argument("--html", help="memscope --html 生成的报告")
     parser.add_argument("--trend", help="memscope analyze --json 的输出文件")
+    parser.add_argument(
+        "--cli", action="store_true",
+        help="验证 CLI 的退出码约定（用 subprocess，不依赖 shell）",
+    )
     args = parser.parse_args(argv)
 
-    if not (args.snapshot or args.html or args.trend):
-        parser.error("至少要指定 --snapshot / --html / --trend 之一")
+    if not (args.snapshot or args.html or args.trend or args.cli):
+        parser.error("至少要指定 --snapshot / --html / --trend / --cli 之一")
 
     print("CI 冒烟校验：")
     problems: list[str] = []
+
+    if args.cli:
+        problems.extend(check_cli_exit_codes())
 
     for flag, checker in (
         (args.snapshot, check_snapshot),

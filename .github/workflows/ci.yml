@@ -188,20 +188,23 @@ jobs:
           python run_tests.py 2>&1 | Out-Null
           if ($LASTEXITCODE) { throw "测试在 cp1252 下失败 (exit=$LASTEXITCODE)" }
 
-      - name: 编码韧性 6/6 · 非法参数退出码
+      - name: 编码韧性 6/6 · CLI 退出码约定
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           PYTHONIOENCODING: cp1252
         run: |
-          # 非法参数应让 argparse 以退出码 2 结束，而不是抛异常崩溃。
-          # 用 `2>&1 | Out-Null` 而不是 cmd /c：后者依赖 cmd 能找到 python，
-          # 找不到时会返回 9009 而不是 2，让这个检查变得不可靠。
-          python -m memscope --definitely-not-a-flag 2>&1 | Out-Null
-          if ($LASTEXITCODE -ne 2) {
-            throw "非法参数应返回 2，实际 $LASTEXITCODE"
-          }
-          Write-Host 'cp1252 环境下全部通过'
+          # 退出码检查放在 Python 里做（tools/ci_smoke.py --cli），
+          # **不**依赖 shell 的 $LASTEXITCODE：
+          #   · --definitely-not-a-flag 会写 stderr，而 PowerShell 5.1 与 7
+          #     对"原生命令写 stderr"的处理不同
+          #   · 管道末尾接 Out-Null 之后，某些版本的 $LASTEXITCODE 行为
+          #     与预期不一致（本项目在 CI 的 PS 7 上正是卡在这里）
+          # subprocess 拿到的 returncode 是操作系统层面的真实值，
+          # 不经过任何 shell 解释，而且测的是真正的入口点
+          # （python -m memscope），不是进程内调用。
+          python tools/ci_smoke.py --cli
+          if ($LASTEXITCODE) { throw "CLI 退出码检查失败 (exit=$LASTEXITCODE)" }
 
   lint:
     name: Lint (ruff)
