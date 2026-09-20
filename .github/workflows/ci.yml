@@ -131,40 +131,76 @@ jobs:
       # ==================================================================
       # 编码韧性回归保护。
       #
-      # Windows 上标准输出被重定向时的默认编码是 GBK / cp1252，而本工具的输出
-      # （包括 argparse 打印的中文帮助）全是中文。这里**故意**把
+      # Windows 上标准输出被重定向时的默认编码是 GBK / cp1252，而本工具的
+      # 输出（包括 argparse 打印的中文帮助）全是中文。这里**故意**把
       # PYTHONIOENCODING 设成 cp1252，确认程序自己会把输出编码重配成 UTF-8。
       #
       # 这条是回归保护 —— CI 曾经因为 build_parser() 不重配编码而挂了 4 个任务。
+      #
+      # **为什么拆成 6 个步骤而不是写成一个脚本？**
+      # 因为 GitHub 的 job 日志需要认证才能下载，而本项目的开发环境拿不到
+      # （GET .../actions/jobs/{id}/logs 返回 403）。拆开之后，失败的步骤名
+      # 就直接指出是哪一条命令挂了，不需要读日志。
       # ==================================================================
-      - name: 编码韧性（Windows，强制 cp1252）
+      - name: 编码韧性 1/6 · --version
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           PYTHONIOENCODING: cp1252
         run: |
-          try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
-
           python -m memscope --version
-          if ($LASTEXITCODE) { throw "--version 在 cp1252 下失败" }
+          if ($LASTEXITCODE) { throw "--version 在 cp1252 下失败 (exit=$LASTEXITCODE)" }
 
+      - name: 编码韧性 2/6 · --help（argparse 打印中文）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: cp1252
+        run: |
           python -m memscope --help | Out-Null
-          if ($LASTEXITCODE) { throw "--help 在 cp1252 下失败（argparse 打印中文帮助）" }
+          if ($LASTEXITCODE) { throw "--help 在 cp1252 下失败 (exit=$LASTEXITCODE)" }
 
+      - name: 编码韧性 3/6 · 快照输出
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: cp1252
+        run: |
           python -m memscope --limit 3 | Out-Null
-          if ($LASTEXITCODE) { throw "快照在 cp1252 下失败" }
+          if ($LASTEXITCODE) { throw "快照在 cp1252 下失败 (exit=$LASTEXITCODE)" }
 
+      - name: 编码韧性 4/6 · 零依赖检查
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: cp1252
+        run: |
           python tools/check_zero_deps.py | Out-Null
-          if ($LASTEXITCODE) { throw "零依赖检查在 cp1252 下失败" }
+          if ($LASTEXITCODE) { throw "零依赖检查在 cp1252 下失败 (exit=$LASTEXITCODE)" }
 
-          # unittest 的结果写在 stderr 上，属于正常输出
-          python run_tests.py | Out-Null
-          if ($LASTEXITCODE) { throw "测试在 cp1252 下失败" }
+      - name: 编码韧性 5/6 · 全部测试
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: cp1252
+        run: |
+          # unittest 的结果默认写在 stderr 上，属于正常输出
+          python run_tests.py 2>&1 | Out-Null
+          if ($LASTEXITCODE) { throw "测试在 cp1252 下失败 (exit=$LASTEXITCODE)" }
 
-          # 非法参数应以退出码 2 结束，而不是崩溃
-          cmd /c "python -m memscope --definitely-not-a-flag >NUL 2>NUL"
-          if ($LASTEXITCODE -ne 2) { throw "非法参数应返回 2，实际 $LASTEXITCODE" }
-
+      - name: 编码韧性 6/6 · 非法参数退出码
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: cp1252
+        run: |
+          # 非法参数应让 argparse 以退出码 2 结束，而不是抛异常崩溃。
+          # 用 `2>&1 | Out-Null` 而不是 cmd /c：后者依赖 cmd 能找到 python，
+          # 找不到时会返回 9009 而不是 2，让这个检查变得不可靠。
+          python -m memscope --definitely-not-a-flag 2>&1 | Out-Null
+          if ($LASTEXITCODE -ne 2) {
+            throw "非法参数应返回 2，实际 $LASTEXITCODE"
+          }
           Write-Host 'cp1252 环境下全部通过'
 
   lint:
