@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 测试 Python ${{ matrix.python-version }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 验证运行时零依赖
+        run: python tools/check_zero_deps.py
+
+      - name: 运行测试（只用标准库 unittest，无需安装任何包）
+        run: python run_tests.py
+
+      # 采集功能只能在 Windows 上跑，所以冒烟测试也只在 Windows 上做
+      - name: 冒烟测试 CLI（Windows）
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python -m memscope --version
+          python -m memscope --limit 5 > snapshot.txt
+          echo "--- 快照输出前 15 行 ---"
+          head -15 snapshot.txt
+          python -m memscope --json > snapshot.json
+          python -c "
+          import json
+          with open('snapshot.json', encoding='utf-8') as fh:
+              data = json.load(fh)
+          assert data['applications'], '至少要归因出一个应用'
+          assert data['system']['physical_total'] > 0
+          total = sum(a['private_bytes'] for a in data['applications'])
+          assert total > 0
+          print('JSON 结构校验通过：', len(data['applications']), '个应用')
+          "
+          python -m memscope --html report.html -q
+          test -s report.html && echo "HTML 报告已生成"
+
+      - name: 冒烟测试采样与分析（Windows）
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python -m memscope watch -i 1 -d 4 -o smoke.jsonl --fast
+          python -m memscope analyze smoke.jsonl
+
+      # 归因与分析是纯逻辑，非 Windows 平台也要验证可导入、可运行
+      - name: 跨平台确认核心逻辑可导入
+        if: runner.os != 'Windows'
+        run: |
+          python -c "
+          import memscope
+          from memscope import attribute, analyze_samples, diagnose, render_text
+          print('核心逻辑在', __import__('sys').platform, '上可导入')
+          "
+
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check memscope tests tools

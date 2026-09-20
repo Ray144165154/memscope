@@ -1,0 +1,51 @@
+# Git 换行符与文本属性配置
+#
+# 为什么需要这个文件？
+#   Windows 用 CRLF 作换行，Linux/macOS 用 LF。如果不统一：
+#     1. 同一个文件在不同系统上被 Git 认为"整份都改了"，diff 全红，没法审阅
+#     2. 有人提交了 CRLF，别人 checkout 后再改，历史里混进一堆无意义变更
+#
+#   下面的配置让仓库里**一律存 LF**，检出时也是一律 LF，
+#   不依赖每个人本机的 core.autocrlf 设置。
+
+* text=auto eol=lf
+
+# ---- 显式声明文本文件类型 ----
+*.py      text diff=python
+*.md      text diff=markdown
+*.toml    text
+*.yml     text
+*.yaml    text
+*.json    text
+*.jsonl   text
+*.txt     text
+*.cfg     text
+*.ini     text
+LICENSE   text
+.gitignore text
+.gitattributes text
+
+# ---- 二进制文件：明确标记，禁止换行符转换 ----
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico  binary
+*.webp binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.exe   binary
+*.dll   binary
+*.so    binary
+*.pyd   binary
+
+# ---- 不参与"该项目主要由什么语言写成"的统计 ----
+docs/*    linguist-documentation
+tools/*   linguist-documentation
+tests/*   linguist-detectable=false
+.github/* linguist-documentation

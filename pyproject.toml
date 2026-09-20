@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memscope"
+version = "0.1.0"
+description = "诚实的内存诊断器：观测、归因、找增长，不「释放内存」/ Honest Windows memory diagnostics"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Ray144165154" }]
+keywords = [
+    "memory", "windows", "diagnostics", "process", "attribution",
+    "memory-leak", "task-manager", "zero-dependency",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/Ray144165154/memscope"
+Repository = "https://github.com/Ray144165154/memscope"
+Issues = "https://github.com/Ray144165154/memscope/issues"
+Changelog = "https://github.com/Ray144165154/memscope/blob/main/CHANGELOG.md"
+
+[project.scripts]
+memscope = "memscope.cli:main"
+
+[tool.setuptools]
+# 扁平布局：包就在仓库根目录，clone 下来 `python -m memscope` 直接可用。
+# 显式列出包名，避免 setuptools 把 tests / tools 也当成包。
+packages = ["memscope"]
+
+# 本项目运行时零依赖，这一条是刻意留空的
+dependencies = []
+
+[project.optional-dependencies]
+# 仅开发用；运行 memscope 本身不需要其中任何一个
+dev = ["pytest>=7.0", "ruff>=0.4"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["tests/_tmp"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
